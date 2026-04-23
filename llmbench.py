@@ -1,313 +1,329 @@
+#!/usr/bin/env python3
 """
-llmbench: Lightweight, provider-agnostic benchmarking harness for large language models.
+llmbench.py — LLM Benchmark Runner
+Evaluates language model outputs with ROUGE-L, BLEU-1, exact match, and F1.
+Stdlib-only. No external dependencies.
+"""
 
-Measures latency, throughput (tokens/sec), output quality (ROUGE-L, exact match),
-and cost estimation across OpenAI, Anthropic, and any OpenAI-compatible endpoint.
-"""
 from __future__ import annotations
-import json, time, statistics, datetime, re
+
+import argparse
+import csv
+import json
+import math
+import re
+import sys
+import time
+import urllib.request
+import urllib.error
 from dataclasses import dataclass, field, asdict
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional
 
 
-@dataclass
-class BenchTask:
-    """A single benchmark task."""
-    task_id: str
-    prompt: str
-    reference: str = ""
-    category: str = "general"
-    max_tokens: int = 256
-    temperature: float = 0.0
-    metadata: Dict[str, Any] = field(default_factory=dict)
+def _tokenise(text: str) -> List[str]:
+    return re.findall(r"[a-zA-Z0-9]+", text.lower())
 
 
-@dataclass
-class BenchResult:
-    """Result for a single (task, model) pair."""
-    task_id: str
-    model: str
-    provider: str
-    prompt: str
-    response: str
-    reference: str
-    latency_s: float
-    ttft_s: float
-    prompt_tokens: int
-    completion_tokens: int
-    total_tokens: int
-    cost_usd: float
-    exact_match: bool
-    rouge_l: float
-    timestamp: str = field(default_factory=lambda: datetime.datetime.utcnow().isoformat())
-    error: str = ""
+def exact_match(prediction: str, reference: str) -> float:
+    return 1.0 if prediction.strip() == reference.strip() else 0.0
 
-    def to_dict(self) -> Dict[str, Any]:
-        return asdict(self)
+
+def exact_match_normalised(prediction: str, reference: str) -> float:
+    return 1.0 if ' '.join(_tokenise(prediction)) == ' '.join(_tokenise(reference)) else 0.0
+
+
+def rouge_l(prediction: str, reference: str) -> float:
+    pred_tokens = _tokenise(prediction)
+    ref_tokens = _tokenise(reference)
+    if not pred_tokens or not ref_tokens:
+        return 0.0
+    m, n = len(pred_tokens), len(ref_tokens)
+    dp = [[0]*(n+1) for _ in range(m+1)]
+    for i in range(1, m+1):
+        for j in range(1, n+1):
+            dp[i][j] = dp[i-1][j-1]+1 if pred_tokens[i-1]==ref_tokens[j-1] else max(dp[i-1][j],dp[i][j-1])
+    lcs = dp[m][n]
+    prec = lcs/m
+    rec = lcs/n
+    return 2*prec*rec/(prec+rec) if prec+rec else 0.0
+
+
+def bleu_1(prediction: str, reference: str) -> float:
+    pred_tokens = _tokenise(prediction)
+    ref_tokens = _tokenise(reference)
+    if not pred_tokens:
+        return 0.0
+    ref_counts: Dict[str,int] = {}
+    for t in ref_tokens:
+        ref_counts[t] = ref_counts.get(t,0)+1
+    pred_counts: Dict[str,int] = {}
+    for t in pred_tokens:
+        pred_counts[t] = pred_counts.get(t,0)+1
+    clipped = sum(min(c, ref_counts.get(t,0)) for t,c in pred_counts.items())
+    prec = clipped/len(pred_tokens)
+    bp = 1.0 if len(pred_tokens)>=len(ref_tokens) else math.exp(1-len(ref_tokens)/len(pred_tokens))
+    return bp*prec
+
+
+def f1_score(prediction: str, reference: str) -> float:
+    pred_set = set(_tokenise(prediction))
+    ref_set = set(_tokenise(reference))
+    if not pred_set or not ref_set:
+        return 0.0
+    common = pred_set & ref_set
+    if not common:
+        return 0.0
+    prec = len(common)/len(pred_set)
+    rec = len(common)/len(ref_set)
+    return 2*prec*rec/(prec+rec)
 
 
 def _approx_tokens(text: str) -> int:
-    return max(1, len(text) // 4)
+    return len(_tokenise(text))
 
 
-def _lcs_length(a: List[str], b: List[str]) -> int:
-    m, n = len(a), len(b)
-    if m == 0 or n == 0:
-        return 0
-    prev = [0] * (n + 1)
-    for i in range(1, m + 1):
-        curr = [0] * (n + 1)
-        for j in range(1, n + 1):
-            if a[i - 1] == b[j - 1]:
-                curr[j] = prev[j - 1] + 1
-            else:
-                curr[j] = max(curr[j - 1], prev[j])
-        prev = curr
-    return prev[n]
+def contains_code(text: str) -> bool:
+    return bool(re.search(r'```|def |class |import |function |return |\{\}|;', text))
 
 
-def rouge_l(hypothesis: str, reference: str) -> float:
-    """Sentence-level ROUGE-L F1 score."""
-    if not hypothesis or not reference:
-        return 0.0
-    hyp_tokens = hypothesis.lower().split()
-    ref_tokens = reference.lower().split()
-    lcs = _lcs_length(hyp_tokens, ref_tokens)
-    if lcs == 0:
-        return 0.0
-    precision = lcs / len(hyp_tokens)
-    recall = lcs / len(ref_tokens)
-    return 2 * precision * recall / (precision + recall)
+@dataclass
+class Task:
+    task_id: str
+    category: str
+    prompt: str
+    reference: str
+    metadata: Dict[str,Any] = field(default_factory=dict)
+
+    def to_dict(self) -> dict:
+        return asdict(self)
 
 
-def exact_match(hypothesis: str, reference: str) -> bool:
-    """Normalised exact match."""
-    def _norm(s: str) -> str:
-        return re.sub(r"[^\w\s]", "", s.lower()).strip()
-    return _norm(hypothesis) == _norm(reference)
+@dataclass
+class BenchmarkResult:
+    task_id: str
+    category: str
+    prompt: str
+    reference: str
+    prediction: str
+    latency_s: float
+    exact_match: float
+    exact_match_norm: float
+    rouge_l: float
+    bleu_1: float
+    f1: float
+    approx_tokens: int
+    error: Optional[str] = None
+
+    def to_dict(self) -> dict:
+        return asdict(self)
+
+    @property
+    def composite_score(self) -> float:
+        return 0.40*self.rouge_l + 0.30*self.f1 + 0.20*self.exact_match_norm + 0.10*self.bleu_1
 
 
-# Cost table: (input_per_1k_usd, output_per_1k_usd) — approximate 2024-Q4
-_COST_TABLE: Dict[str, Tuple[float, float]] = {
-    "gpt-4o":                    (0.005,   0.015),
-    "gpt-4o-mini":               (0.00015, 0.0006),
-    "gpt-4-turbo":               (0.01,    0.03),
-    "gpt-3.5-turbo":             (0.0005,  0.0015),
-    "claude-3-5-sonnet-20241022":(0.003,   0.015),
-    "claude-3-haiku-20240307":   (0.00025, 0.00125),
-    "claude-3-opus-20240229":    (0.015,   0.075),
-    "command-r":                 (0.0005,  0.0015),
-    "command-r-plus":            (0.003,   0.015),
-}
-
-
-def estimate_cost(model: str, prompt_tokens: int, completion_tokens: int) -> float:
-    model_key = model.lower()
-    for key, (inp, out) in _COST_TABLE.items():
-        if key in model_key:
-            return (prompt_tokens * inp + completion_tokens * out) / 1000
-    return (prompt_tokens * 0.001 + completion_tokens * 0.002) / 1000
-
-
-class _BaseProvider:
-    name: str = "base"
-
-    def complete(self, prompt: str, model: str, max_tokens: int,
-                 temperature: float) -> Tuple[str, int, int]:
-        raise NotImplementedError
-
-
-class OpenAIProvider(_BaseProvider):
-    """Adapter for OpenAI-compatible APIs."""
-    name = "openai"
-
-    def __init__(self, api_key: str, base_url: str = "https://api.openai.com/v1") -> None:
-        self.api_key = api_key
-        self.base_url = base_url.rstrip("/")
-
-    def complete(self, prompt, model, max_tokens, temperature):
-        import urllib.request
-        payload = json.dumps({
-            "model": model,
-            "messages": [{"role": "user", "content": prompt}],
-            "max_tokens": max_tokens,
-            "temperature": temperature,
-        }).encode()
-        url = self.base_url + "/chat/completions"
-        req = urllib.request.Request(url, data=payload, headers={
-            "Authorization": "Bearer " + self.api_key,
-            "Content-Type": "application/json",
-        })
-        with urllib.request.urlopen(req, timeout=120) as resp:
-            data = json.loads(resp.read())
-        text = data["choices"][0]["message"]["content"]
-        usage = data.get("usage", {})
-        p_tok = usage.get("prompt_tokens", _approx_tokens(prompt))
-        c_tok = usage.get("completion_tokens", _approx_tokens(text))
-        return text, p_tok, c_tok
-
-
-class AnthropicProvider(_BaseProvider):
-    """Adapter for Anthropic Messages API."""
-    name = "anthropic"
-
-    def __init__(self, api_key: str) -> None:
-        self.api_key = api_key
-
-    def complete(self, prompt, model, max_tokens, temperature):
-        import urllib.request
-        payload = json.dumps({
-            "model": model,
-            "max_tokens": max_tokens,
-            "temperature": temperature,
-            "messages": [{"role": "user", "content": prompt}],
-        }).encode()
-        req = urllib.request.Request(
-            "https://api.anthropic.com/v1/messages",
-            data=payload,
-            headers={
-                "x-api-key": self.api_key,
-                "anthropic-version": "2023-06-01",
-                "Content-Type": "application/json",
-            },
-        )
-        with urllib.request.urlopen(req, timeout=120) as resp:
-            data = json.loads(resp.read())
-        text = data["content"][0]["text"]
-        usage = data.get("usage", {})
-        p_tok = usage.get("input_tokens", _approx_tokens(prompt))
-        c_tok = usage.get("output_tokens", _approx_tokens(text))
-        return text, p_tok, c_tok
+SAMPLE_TASKS: List[Task] = [
+    Task("qa_01","qa","What is the capital of France?","Paris"),
+    Task("qa_02","qa","What year did World War II end?","1945"),
+    Task("qa_03","qa","What is the chemical symbol for water?","H2O"),
+    Task("qa_04","qa","Who wrote Pride and Prejudice?","Jane Austen"),
+    Task("qa_05","qa","What is the square root of 144?","12"),
+    Task("code_01","coding","Write a Python function that returns the factorial of n.",
+         "def factorial(n):\n    if n == 0:\n        return 1\n    return n * factorial(n - 1)"),
+    Task("code_02","coding","Write a Python one-liner to reverse a list called lst.","lst[::-1]"),
+    Task("code_03","coding","Write a Python function to check if a string is a palindrome.",
+         "def is_palindrome(s):\n    return s == s[::-1]"),
+    Task("summ_01","summarization",
+         "Summarize in one sentence: The quick brown fox jumps over the lazy dog. The dog did not seem to mind.",
+         "A fox jumped over a lazy dog."),
+    Task("summ_02","summarization",
+         "Summarize: Water boils at 100 degrees Celsius at sea level.",
+         "Water boils at 100 degrees Celsius at sea level."),
+]
 
 
 class BenchmarkRunner:
-    """Run a suite of tasks against one or more (provider, model) pairs."""
+    def __init__(self, tasks: Optional[List[Task]] = None):
+        self.tasks = tasks or list(SAMPLE_TASKS)
+        self.results: List[BenchmarkResult] = []
 
-    def __init__(self, tasks: List[BenchTask], output_path: Optional[str] = None) -> None:
-        self.tasks = tasks
-        self.output_path = Path(output_path) if output_path else None
-        self._results: List[BenchResult] = []
-
-    def run_one(self, task: BenchTask, provider: _BaseProvider, model: str) -> BenchResult:
-        t0 = time.perf_counter()
-        error = ""
-        response = ""
-        prompt_tok = completion_tok = 0
-        try:
-            response, prompt_tok, completion_tok = provider.complete(
-                task.prompt, model, task.max_tokens, task.temperature
-            )
-        except Exception as exc:
-            error = str(exc)
-        latency = time.perf_counter() - t0
-        cost = estimate_cost(model, prompt_tok, completion_tok)
-        result = BenchResult(
-            task_id=task.task_id, model=model, provider=provider.name,
-            prompt=task.prompt, response=response, reference=task.reference,
-            latency_s=round(latency, 4), ttft_s=0.0,
-            prompt_tokens=prompt_tok, completion_tokens=completion_tok,
-            total_tokens=prompt_tok + completion_tok,
-            cost_usd=round(cost, 8),
-            exact_match=exact_match(response, task.reference),
-            rouge_l=round(rouge_l(response, task.reference), 4),
+    def _score(self, task: Task, prediction: str, latency: float, error: Optional[str]) -> BenchmarkResult:
+        import llmbench as _self
+        return BenchmarkResult(
+            task_id=task.task_id, category=task.category,
+            prompt=task.prompt, reference=task.reference,
+            prediction=prediction, latency_s=round(latency,4),
+            exact_match=exact_match(prediction,task.reference),
+            exact_match_norm=exact_match_normalised(prediction,task.reference),
+            rouge_l=rouge_l(prediction,task.reference),
+            bleu_1=bleu_1(prediction,task.reference),
+            f1=f1_score(prediction,task.reference),
+            approx_tokens=_approx_tokens(prediction),
             error=error,
         )
-        if self.output_path:
-            with self.output_path.open("a") as f:
-                f.write(json.dumps(result.to_dict()) + "\n")
-        return result
 
-    def run(self, providers_models: List[Tuple[_BaseProvider, str]]) -> List[BenchResult]:
-        """Run all tasks with all (provider, model) pairs."""
-        self._results = []
-        for task in self.tasks:
-            for provider, model in providers_models:
-                self._results.append(self.run_one(task, provider, model))
-        return self._results
+    def run_offline(self, model_fn: Callable[[str],str], tasks: Optional[List[Task]] = None) -> List[BenchmarkResult]:
+        tasks = tasks or self.tasks
+        results = []
+        for task in tasks:
+            t0 = time.monotonic()
+            try:
+                pred = model_fn(task.prompt)
+                lat = time.monotonic()-t0
+                err = None
+            except Exception as e:
+                pred = ""
+                lat = time.monotonic()-t0
+                err = str(e)
+            results.append(self._score(task, pred, lat, err))
+        self.results.extend(results)
+        return results
 
-    def summary(self) -> Dict[str, Any]:
-        if not self._results:
+    def run_openai(self, api_key: str, model: str = "gpt-3.5-turbo",
+                   tasks: Optional[List[Task]] = None, max_tokens: int = 256,
+                   temperature: float = 0.0) -> List[BenchmarkResult]:
+        tasks = tasks or self.tasks
+        results = []
+        url = "https://api.openai.com/v1/chat/completions"
+        headers = {"Content-Type": "application/json", "Authorization": f"Bearer {api_key}"}
+        for task in tasks:
+            payload = json.dumps({"model": model, "messages": [
+                {"role": "system", "content": "Answer concisely."},
+                {"role": "user", "content": task.prompt},
+            ], "max_tokens": max_tokens, "temperature": temperature}).encode()
+            t0 = time.monotonic()
+            try:
+                req = urllib.request.Request(url, data=payload, headers=headers, method="POST")
+                with urllib.request.urlopen(req, timeout=30) as r:
+                    data = json.loads(r.read())
+                lat = time.monotonic()-t0
+                pred = data["choices"][0]["message"]["content"].strip()
+                err = None
+            except Exception as e:
+                lat = time.monotonic()-t0
+                pred = ""
+                err = str(e)
+            results.append(self._score(task, pred, lat, err))
+        self.results.extend(results)
+        return results
+
+    def summarize(self, results: Optional[List[BenchmarkResult]] = None) -> Dict[str,Any]:
+        results = results or self.results
+        if not results:
             return {}
-        by_model: Dict[str, List[BenchResult]] = {}
-        for r in self._results:
-            by_model.setdefault(r.model, []).append(r)
-        out = {}
-        for model, results in by_model.items():
-            valid = [r for r in results if not r.error]
-            out[model] = {
-                "n": len(results),
-                "errors": len(results) - len(valid),
-                "avg_latency_s": round(statistics.mean(r.latency_s for r in valid), 4) if valid else None,
-                "p50_latency_s": round(statistics.median(r.latency_s for r in valid), 4) if valid else None,
-                "avg_tokens": round(statistics.mean(r.total_tokens for r in valid), 1) if valid else None,
-                "total_cost_usd": round(sum(r.cost_usd for r in valid), 6),
-                "exact_match_rate": round(sum(r.exact_match for r in valid) / max(len(valid), 1), 4),
-                "avg_rouge_l": round(statistics.mean(r.rouge_l for r in valid), 4) if valid else None,
+        cats: Dict[str,List] = {}
+        for r in results:
+            cats.setdefault(r.category,[]).append(r)
+
+        def _avg(vals):
+            return round(sum(vals)/len(vals),4) if vals else 0.0
+
+        summary: Dict[str,Any] = {"overall":{},"by_category":{}}
+        for cat, cr in cats.items():
+            summary["by_category"][cat] = {
+                "n":len(cr), "exact_match":_avg([r.exact_match for r in cr]),
+                "exact_match_norm":_avg([r.exact_match_norm for r in cr]),
+                "rouge_l":_avg([r.rouge_l for r in cr]), "bleu_1":_avg([r.bleu_1 for r in cr]),
+                "f1":_avg([r.f1 for r in cr]), "composite":_avg([r.composite_score for r in cr]),
+                "avg_latency_s":_avg([r.latency_s for r in cr]), "errors":sum(1 for r in cr if r.error),
             }
-        return out
+        summary["overall"] = {
+            "n":len(results), "exact_match":_avg([r.exact_match for r in results]),
+            "exact_match_norm":_avg([r.exact_match_norm for r in results]),
+            "rouge_l":_avg([r.rouge_l for r in results]), "bleu_1":_avg([r.bleu_1 for r in results]),
+            "f1":_avg([r.f1 for r in results]), "composite":_avg([r.composite_score for r in results]),
+            "avg_latency_s":_avg([r.latency_s for r in results]), "errors":sum(1 for r in results if r.error),
+        }
+        return summary
 
-    def to_markdown(self) -> str:
-        summ = self.summary()
-        lines = [
-            "# LLMBench Results", "",
-            "Tasks: " + str(len(self.tasks)) + "  ",
-            "Timestamp: " + datetime.datetime.utcnow().isoformat() + "Z", "",
-            "| Model | N | Errors | Avg Latency (s) | Avg Tokens | Cost (USD) | EM Rate | ROUGE-L |",
-            "|---|---|---|---|---|---|---|---|",
-        ]
-        for model, s in summ.items():
-            lines.append(
-                "| " + model + " | " + str(s["n"]) + " | " + str(s["errors"]) + " | " +
-                str(s["avg_latency_s"]) + " | " + str(s["avg_tokens"]) + " | " +
-                "{:.6f}".format(s["total_cost_usd"]) + " | " +
-                "{:.2%}".format(s["exact_match_rate"]) + " | " +
-                str(s["avg_rouge_l"]) + " |"
-            )
-        return "\n".join(lines)
+    def export_csv(self, path: Path, results: Optional[List[BenchmarkResult]] = None):
+        results = results or self.results
+        if not results:
+            return
+        fieldnames = list(results[0].to_dict().keys()) + ["composite_score"]
+        with path.open("w",newline="",encoding="utf-8") as fh:
+            w = csv.DictWriter(fh, fieldnames=fieldnames)
+            w.writeheader()
+            for r in results:
+                row = r.to_dict()
+                row["composite_score"] = round(r.composite_score,4)
+                w.writerow(row)
 
-
-def load_tasks_jsonl(path: str) -> List[BenchTask]:
-    """Load benchmark tasks from a JSONL file."""
-    tasks = []
-    fields = BenchTask.__dataclass_fields__
-    with Path(path).open(encoding="utf-8") as f:
-        for line in f:
-            line = line.strip()
-            if line:
-                d = json.loads(line)
-                tasks.append(BenchTask(**{k: v for k, v in d.items() if k in fields}))
-    return tasks
+    def export_jsonl(self, path: Path, results: Optional[List[BenchmarkResult]] = None):
+        results = results or self.results
+        with path.open("w",encoding="utf-8") as fh:
+            for r in results:
+                row = r.to_dict()
+                row["composite_score"] = round(r.composite_score,4)
+                fh.write(json.dumps(row,ensure_ascii=False)+"\n")
 
 
-def _cli() -> None:
-    import argparse, os
-    parser = argparse.ArgumentParser(
-        prog="llmbench",
-        description="Benchmark LLMs for latency, quality, and cost.",
-    )
-    parser.add_argument("tasks_file", help="JSONL file of BenchTask records.")
-    parser.add_argument("--provider", choices=["openai", "anthropic"], default="openai")
-    parser.add_argument("--model", default="gpt-4o-mini")
-    parser.add_argument("--api-key", default=None)
-    parser.add_argument("--base-url", default="https://api.openai.com/v1")
-    parser.add_argument("-o", "--output", default="bench_results.jsonl")
-    args = parser.parse_args()
+def _parse_args(argv=None):
+    p = argparse.ArgumentParser(prog="llmbench",description="Benchmark LLM outputs against references.")
+    sub = p.add_subparsers(dest="command")
+    run_p = sub.add_parser("run",help="Run benchmark against an OpenAI-compatible API.")
+    run_p.add_argument("--api-key",default=None)
+    run_p.add_argument("--model",default="gpt-3.5-turbo")
+    run_p.add_argument("--tasks",default=None)
+    run_p.add_argument("--output","-o",default="results.jsonl")
+    run_p.add_argument("--csv",default=None)
+    score_p = sub.add_parser("score",help="Score predictions against references.")
+    score_p.add_argument("predictions")
+    score_p.add_argument("--format",choices=["json","text"],default="text")
+    sub.add_parser("sample",help="Print built-in sample tasks.")
+    return p.parse_args(argv)
 
-    api_key = (args.api_key or os.environ.get("OPENAI_API_KEY")
-               or os.environ.get("ANTHROPIC_API_KEY", ""))
-    provider: _BaseProvider
-    if args.provider == "openai":
-        provider = OpenAIProvider(api_key=api_key, base_url=args.base_url)
-    else:
-        provider = AnthropicProvider(api_key=api_key)
 
-    tasks = load_tasks_jsonl(args.tasks_file)
-    print("Loaded " + str(len(tasks)) + " tasks. Running with " + args.model + "...")
-    runner = BenchmarkRunner(tasks, output_path=args.output)
-    runner.run([(provider, args.model)])
-    print(runner.to_markdown())
+def main(argv=None) -> int:
+    args = _parse_args(argv)
+    if args.command == "sample":
+        for t in SAMPLE_TASKS:
+            print(json.dumps(t.to_dict(),ensure_ascii=False))
+        return 0
+    if args.command == "score":
+        path = Path(args.predictions)
+        if not path.is_file():
+            print(f"Error: {path} not found",file=sys.stderr)
+            return 1
+        results = []
+        with path.open(encoding="utf-8") as fh:
+            for line in fh:
+                line=line.strip()
+                if not line: continue
+                obj=json.loads(line)
+                pred=obj.get("prediction","")
+                ref=obj.get("reference","")
+                t=Task(task_id=obj.get("task_id","?"),category=obj.get("category","unknown"),
+                       prompt=obj.get("prompt",""),reference=ref)
+                runner=BenchmarkRunner([t])
+                results.extend(runner.run_offline(lambda _: pred, [t]))
+        runner2=BenchmarkRunner()
+        runner2.results=results
+        summary=runner2.summarize()
+        ov=summary.get("overall",{})
+        if args.format=="json":
+            print(json.dumps(summary,indent=2))
+        else:
+            print(f"Tasks: {ov.get('n',0)}  EM: {ov.get('exact_match',0):.4f}  ROUGE-L: {ov.get('rouge_l',0):.4f}  F1: {ov.get('f1',0):.4f}  Composite: {ov.get('composite',0):.4f}")
+        return 0
+    if args.command == "run":
+        import os
+        api_key=args.api_key or os.environ.get("OPENAI_API_KEY","")
+        if not api_key:
+            print("Error: provide --api-key or set OPENAI_API_KEY",file=sys.stderr)
+            return 1
+        runner=BenchmarkRunner()
+        results=runner.run_openai(api_key=api_key,model=args.model)
+        Path(args.output).write_text("\n".join(json.dumps(r.to_dict()) for r in results))
+        print(json.dumps(runner.summarize(),indent=2))
+        return 0
+    # Demo mode
+    runner=BenchmarkRunner()
+    results=runner.run_offline(lambda p: p.split("?")[0].strip() if "?" in p else p[:40])
+    print(json.dumps(runner.summarize(),indent=2))
+    return 0
 
 
 if __name__ == "__main__":
-    _cli()
+    sys.exit(main())
