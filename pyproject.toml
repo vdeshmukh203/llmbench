@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "llmbench"
-version = "0.1.0"
+version = "0.2.0"
 description = "Reproducible LLM benchmarking framework with latency, quality, and cost tracking"
 readme = "README.md"
 license = {file = "LICENSE"}
@@ -19,8 +19,12 @@ classifiers = [
     "Topic :: Scientific/Engineering :: Artificial Intelligence",
 ]
 
+[project.optional-dependencies]
+yaml = ["pyyaml>=5.0"]
+
 [project.scripts]
-llmbench = "llmbench:_cli"
+llmbench     = "llmbench:main"
+llmbench-gui = "llmbench_gui:run_gui"
 
 [tool.setuptools]
-py-modules = ["llmbench"]
+py-modules = ["llmbench", "llmbench_gui"]
