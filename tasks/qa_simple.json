@@ -1,0 +1,37 @@
+{
+  "name": "qa_simple",
+  "version": "1.0",
+  "description": "Simple factual question-answering tasks",
+  "tasks": [
+    {
+      "task_id": "qa_01",
+      "category": "qa",
+      "prompt": "What is the capital of France?",
+      "reference": "Paris"
+    },
+    {
+      "task_id": "qa_02",
+      "category": "qa",
+      "prompt": "What year did World War II end?",
+      "reference": "1945"
+    },
+    {
+      "task_id": "qa_03",
+      "category": "qa",
+      "prompt": "What is the chemical symbol for water?",
+      "reference": "H2O"
+    },
+    {
+      "task_id": "qa_04",
+      "category": "qa",
+      "prompt": "Who wrote Pride and Prejudice?",
+      "reference": "Jane Austen"
+    },
+    {
+      "task_id": "qa_05",
+      "category": "qa",
+      "prompt": "What is the square root of 144?",
+      "reference": "12"
+    }
+  ]
+}

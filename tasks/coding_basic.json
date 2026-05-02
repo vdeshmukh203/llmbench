@@ -1,0 +1,37 @@
+{
+  "name": "coding_basic",
+  "version": "1.0",
+  "description": "Basic Python coding tasks",
+  "tasks": [
+    {
+      "task_id": "code_01",
+      "category": "coding",
+      "prompt": "Write a Python function that returns the factorial of n.",
+      "reference": "def factorial(n):\n    if n == 0:\n        return 1\n    return n * factorial(n - 1)"
+    },
+    {
+      "task_id": "code_02",
+      "category": "coding",
+      "prompt": "Write a Python one-liner to reverse a list called lst.",
+      "reference": "lst[::-1]"
+    },
+    {
+      "task_id": "code_03",
+      "category": "coding",
+      "prompt": "Write a Python function to check if a string is a palindrome.",
+      "reference": "def is_palindrome(s):\n    return s == s[::-1]"
+    },
+    {
+      "task_id": "code_04",
+      "category": "coding",
+      "prompt": "Write a Python function that returns the nth Fibonacci number.",
+      "reference": "def fib(n):\n    if n <= 1:\n        return n\n    return fib(n - 1) + fib(n - 2)"
+    },
+    {
+      "task_id": "code_05",
+      "category": "coding",
+      "prompt": "Write a Python list comprehension that squares all even numbers from 0 to 9.",
+      "reference": "[x**2 for x in range(10) if x % 2 == 0]"
+    }
+  ]
+}

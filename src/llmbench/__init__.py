@@ -1,18 +1,39 @@
-"""
-llmbench: Lightweight reproducible LLM benchmarking framework.
+"""llmbench: Lightweight reproducible LLM benchmarking framework."""
 
-Defines a declarative YAML-based benchmark specification format and provides
-a runner that executes prompt suites against one or more LLM providers,
-records responses with SHA-256-linked provenance, scores outputs using
-configurable metrics, and emits reproducible benchmark reports in JSON and
-Markdown formats.
-"""
-
-__version__ = "0.1.0"
+__version__ = "0.2.0"
 __author__ = "Vaibhav Deshmukh"
 __license__ = "MIT"
 
+from .metrics import (
+    _tokenise,
+    approx_tokens,
+    bleu_1,
+    contains_code,
+    exact_match,
+    exact_match_normalised,
+    f1_score,
+    rouge_l,
+)
+from .models import BenchmarkResult, Task
 from .runner import BenchmarkRunner
-from .spec import BenchmarkSpec
+from .spec import BenchmarkSpec, SAMPLE_TASKS
 
-__all__ = ["BenchmarkRunner", "BenchmarkSpec"]
+# v0.1 compat alias
+_approx_tokens = approx_tokens
+
+__all__ = [
+    "BenchmarkRunner",
+    "BenchmarkSpec",
+    "BenchmarkResult",
+    "Task",
+    "SAMPLE_TASKS",
+    "exact_match",
+    "exact_match_normalised",
+    "rouge_l",
+    "bleu_1",
+    "f1_score",
+    "approx_tokens",
+    "contains_code",
+    "_tokenise",
+    "_approx_tokens",
+]
