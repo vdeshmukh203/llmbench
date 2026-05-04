@@ -149,7 +149,6 @@ class BenchmarkRunner:
         self.results: List[BenchmarkResult] = []
 
     def _score(self, task: Task, prediction: str, latency: float, error: Optional[str]) -> BenchmarkResult:
-        import llmbench as _self
         return BenchmarkResult(
             task_id=task.task_id, category=task.category,
             prompt=task.prompt, reference=task.reference,
@@ -297,7 +296,7 @@ def main(argv=None) -> int:
                 t=Task(task_id=obj.get("task_id","?"),category=obj.get("category","unknown"),
                        prompt=obj.get("prompt",""),reference=ref)
                 runner=BenchmarkRunner([t])
-                results.extend(runner.run_offline(lambda _: pred, [t]))
+                results.extend(runner.run_offline(lambda _, p=pred: p, [t]))
         runner2=BenchmarkRunner()
         runner2.results=results
         summary=runner2.summarize()
@@ -324,6 +323,9 @@ def main(argv=None) -> int:
     print(json.dumps(runner.summarize(),indent=2))
     return 0
 
+
+# Entry-point alias referenced by pyproject.toml
+_cli = main
 
 if __name__ == "__main__":
     sys.exit(main())
