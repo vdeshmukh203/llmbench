@@ -20,7 +20,11 @@ classifiers = [
 ]
 
 [project.scripts]
-llmbench = "llmbench:_cli"
+llmbench = "llmbench.cli:main"
+llmbench-gui = "llmbench.gui:main"
 
-[tool.setuptools]
-py-modules = ["llmbench"]
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
