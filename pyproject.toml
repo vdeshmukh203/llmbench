@@ -4,23 +4,35 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "llmbench"
-version = "0.1.0"
+version = "0.2.0"
 description = "Reproducible LLM benchmarking framework with latency, quality, and cost tracking"
 readme = "README.md"
 license = {file = "LICENSE"}
 authors = [{name = "Vaibhav Deshmukh", email = "vdeshmukh203@gmail.com"}]
 requires-python = ">=3.8"
-keywords = ["llm", "benchmark", "evaluation", "rouge", "latency", "cost", "reproducibility"]
+keywords = ["llm", "benchmark", "evaluation", "rouge", "bleu", "latency", "reproducibility"]
 classifiers = [
     "Development Status :: 3 - Alpha",
     "Intended Audience :: Science/Research",
     "License :: OSI Approved :: MIT License",
     "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.8",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
     "Topic :: Scientific/Engineering :: Artificial Intelligence",
 ]
 
-[project.scripts]
-llmbench = "llmbench:_cli"
+[project.optional-dependencies]
+yaml = ["pyyaml>=6.0"]
 
-[tool.setuptools]
-py-modules = ["llmbench"]
+[project.scripts]
+llmbench = "llmbench.cli:main"
+llmbench-gui = "llmbench.gui:launch"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
