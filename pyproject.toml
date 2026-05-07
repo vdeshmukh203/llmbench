@@ -20,7 +20,7 @@ classifiers = [
 ]
 
 [project.scripts]
-llmbench = "llmbench:_cli"
+llmbench = "llmbench.cli:main"
 
-[tool.setuptools]
-py-modules = ["llmbench"]
+[tool.setuptools.packages.find]
+where = ["src"]
