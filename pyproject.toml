@@ -10,7 +10,7 @@ readme = "README.md"
 license = {file = "LICENSE"}
 authors = [{name = "Vaibhav Deshmukh", email = "vdeshmukh203@gmail.com"}]
 requires-python = ">=3.8"
-keywords = ["llm", "benchmark", "evaluation", "rouge", "latency", "cost", "reproducibility"]
+keywords = ["llm", "benchmark", "evaluation", "rouge", "bleu", "latency", "reproducibility"]
 classifiers = [
     "Development Status :: 3 - Alpha",
     "Intended Audience :: Science/Research",
@@ -20,7 +20,8 @@ classifiers = [
 ]
 
 [project.scripts]
-llmbench = "llmbench:_cli"
+llmbench = "llmbench.cli:_cli"
+llmbench-gui = "llmbench.gui:main"
 
-[tool.setuptools]
-py-modules = ["llmbench"]
+[tool.setuptools.packages.find]
+where = ["src"]
