@@ -149,7 +149,6 @@ class BenchmarkRunner:
         self.results: List[BenchmarkResult] = []
 
     def _score(self, task: Task, prediction: str, latency: float, error: Optional[str]) -> BenchmarkResult:
-        import llmbench as _self
         return BenchmarkResult(
             task_id=task.task_id, category=task.category,
             prompt=task.prompt, reference=task.reference,
@@ -315,7 +314,9 @@ def main(argv=None) -> int:
             return 1
         runner=BenchmarkRunner()
         results=runner.run_openai(api_key=api_key,model=args.model)
-        Path(args.output).write_text("\n".join(json.dumps(r.to_dict()) for r in results))
+        with Path(args.output).open("w",encoding="utf-8") as _fh:
+            for _r in results:
+                _fh.write(json.dumps(_r.to_dict(),ensure_ascii=False)+"\n")
         print(json.dumps(runner.summarize(),indent=2))
         return 0
     # Demo mode
@@ -323,6 +324,10 @@ def main(argv=None) -> int:
     results=runner.run_offline(lambda p: p.split("?")[0].strip() if "?" in p else p[:40])
     print(json.dumps(runner.summarize(),indent=2))
     return 0
+
+
+def _cli() -> None:
+    sys.exit(main())
 
 
 if __name__ == "__main__":
